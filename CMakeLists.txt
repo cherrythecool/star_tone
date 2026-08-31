@@ -25,6 +25,9 @@ add_subdirectory(thirdparty/cherryaudio)
 
 add_executable(star_tone
     src/main.c
+
+    src/str_tools.c
+    src/converter.c
 )
 
 target_link_libraries(star_tone PRIVATE cherryaudio)

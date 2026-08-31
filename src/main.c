@@ -3,10 +3,14 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include <string.h>
+#include <time.h>
+
+// posix shit we prolly wanna replace eventually lol (with a cross platform api)
 #include <sys/types.h>
 #include <dirent.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #include "cherryaudio.h"
 #include "opusenc.h"
@@ -75,7 +79,30 @@ void replace_extension_with(char* dst, const char* path, const char* newext) {
     }
 }
 
+double time_get_seconds(void) {
+    struct timespec time;
+    clock_gettime(CLOCK_MONOTONIC, &time);
+    return (double)time.tv_sec + ((double)time.tv_nsec / 1000.0 / 1000.0 / 1000.0);
+}
+
+// void busy_sleep(double seconds) {
+//     double start = time_get_seconds();
+//     while (time_get_seconds() - start < seconds) {
+//         continue;
+//     }
+// }
+
 int main(void) {
+    // double start = time_get_seconds();
+    // busy_sleep(1.0 / 60.0);
+    // double end = time_get_seconds();
+    // printf("%f s diff on busy sleep\n", end - start);
+
+    // start = time_get_seconds();
+    // usleep(16667);
+    // end = time_get_seconds();
+    // printf("%f s diff on usleep\n", end - start);
+
     printf("starting star_tone\n");
 
     const char* songs_folder = "./songs";
@@ -158,27 +185,36 @@ int main(void) {
             return 1;
         }
 
-        uint64_t decode_buffer_size = stream_meta.sample_rate;
-        float* decode_buffer = calloc(decode_buffer_size, sizeof(float));
+        uint64_t decode_buffer_size = stream_meta.sample_rate * stream_meta.channels;
+        float* decode_buffer = malloc(decode_buffer_size * sizeof(float));
 
-        // todo: make the 1s buffer once and keep decoding into it from there
+        double pcm_s = 0.0;
+        double opus_s = 0.0;
+
+        // TODO: test perf of the flac audio decoding and opus encoding to see which is bottleneck
+        // my guess is opus & that i need to do the proper optimizations with like SIMD for it but we'll see
         uint64_t samples_done = 0;
         while (samples_done < stream_meta.total_sample_count) {
-            cherryaudio_pcm pcm = cherryaudio_stream_decode_pcm(stream, CHERRYAUDIO_PCM_FORMAT_F32, decode_buffer_size, decode_buffer);
+            double start = time_get_seconds();
+            cherryaudio_pcm pcm = cherryaudio_stream_decode_pcm(stream, CHERRYAUDIO_PCM_FORMAT_F32, decode_buffer_size / stream_meta.channels, decode_buffer);
             if (pcm.frames_len == 0) {
                 printf("\nreached eof early\n");
                 break;
             }
+            pcm_s += time_get_seconds() - start;
+            printf("\r%fs to decode pcm", pcm_s);
 
             samples_done += pcm.frames_len / stream_meta.channels;
 
+            start = time_get_seconds();
             int encode_res = ope_encoder_write_float(encoder, pcm.frames, pcm.frames_len / stream_meta.channels);
             if (encode_res != OPE_OK) {
                 fprintf(stderr, "failed to encode opus with error %d\n", encode_res);
                 return 1;
             }
+            opus_s += time_get_seconds() - start;
+            printf(" // %fs to encode opus", opus_s);
 
-            printf("\r%s: %f%% encoded", conversion_file, ((float)samples_done / (float)stream_meta.total_sample_count) * 100.0f);
             fflush(stdout);
         }
         

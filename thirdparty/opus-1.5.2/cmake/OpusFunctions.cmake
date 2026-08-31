@@ -168,7 +168,7 @@ function(opus_supports_cpu_detection RUNTIME_CPU_CAPABILITY_DETECTION)
   elseif(OPUS_CPU_ARM)
     # ARM cpu detection is implemented for Windows and anything
     # using a Linux kernel (such as Android).
-    if (CMAKE_SYSTEM_NAME MATCHES "(Windows|Linux|Android)")
+    if (CMAKE_SYSTEM_NAME MATCHES "(Windows|Linux|Android|Darwin)")
       set(RUNTIME_CPU_CAPABILITY_DETECTION 1 PARENT_SCOPE)
     endif ()
   else()

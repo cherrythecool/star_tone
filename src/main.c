@@ -214,51 +214,100 @@ void* file_load(void* arg) {
     pthread_exit(NULL);
 }
 
+typedef struct {
+    size_t len;
+    bool found;
+} remove_last_newline_t;
+
+remove_last_newline_t str_remove_last_newline(char* str, size_t len) {
+    bool found_newline = false;
+    size_t newline_index = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        if (str[i] == '\n') {
+            found_newline = true;
+            newline_index = i;
+        }
+    }
+
+    if (found_newline) {
+        str[newline_index] = '\0';
+    }
+
+    return (remove_last_newline_t) {newline_index, found_newline};
+}
+
+char* get_line(size_t* len) {
+    char* line = NULL;
+    size_t line_len = 0;
+    getline(&line, &line_len, stdin);
+
+    if (line == NULL) {
+        if (len) {
+            *len = 0;
+        }
+
+        return line;
+    }
+
+    remove_last_newline_t newline_ret = str_remove_last_newline(line, line_len);
+
+    if (len) {
+        *len = newline_ret.found ? newline_ret.len : line_len;
+    }
+
+    return line;
+}
+
 int main(void) {
     printf(ANSI_ESC("1") ANSI_ESC("33") "[star_tone] " ANSI_RESET "Starting\n");
 
-    const char* songs_folder = "./songs";
-    const char* conversion_folder = "./songs-converted";
-    printf("Opening songs directory '%s' and converting into '%s'\n", songs_folder, conversion_folder);
+    printf("Input directory: ");
+    char* songs_folder = get_line(NULL);
 
+    printf("Output directory: ");
+    char* conversion_folder = get_line(NULL);
+    
+    printf("Opening songs directory '%s' and converting into '%s'\n", songs_folder, conversion_folder);
+    
     DIR *dp;
     dp = opendir(songs_folder);
     if (dp == NULL) {
-        fprintf(stderr, "couldn't open the songs directory\n");
+        fprintf(stderr, "Couldn't open the songs directory (%s)\n", songs_folder);
         return 1;
     }
-
+    
     char** songs = malloc(sizeof(char*));
     size_t songs_size = 1;
     size_t songs_count = 0;
-
+    
     struct dirent* ep;
     while ((ep = readdir(dp)) != NULL) {
         const char* extension = file_path_get_ext(ep->d_name);
-
+        
         if (strs_eql_nocase(extension, "flac") || strs_eql_nocase(extension, "wav")) {
             if (songs_count > songs_size - 1) {
                 songs_size *= 2;
                 songs = realloc(songs, sizeof(char*) * songs_size);
             }
-
+            
             size_t path_size = sizeof(char) * ep->d_namlen;
             char* perma_path = malloc(path_size + 1);
             memset(perma_path, 0, path_size + 1);
             memcpy(perma_path, ep->d_name, path_size);
-
+            
             songs[songs_count] = perma_path;
             songs_count += 1;
         }
     }
     
     closedir(dp);
-
+    
     printf("Found %zu files to convert\n", songs_count);
-
+    
     file_load_t* threads = calloc(songs_count, sizeof(file_load_t));
     size_t threads_count = songs_count;
-
+    
     for (size_t i = 0; i < songs_count; i++) {
         threads[i] = (file_load_t) {
             (pthread_t) {0},
@@ -271,78 +320,81 @@ int main(void) {
             0.0,
             (pthread_mutex_t) {0},
         };
-
+        
         pthread_mutex_init(&threads[i].finished_mutex, NULL);
         pthread_mutex_init(&threads[i].progress_percent_mutex, NULL);
-
+        
         int res = pthread_create(&threads[i].thread, NULL, file_load, &threads[i]);
         if (res) {
             fprintf(stderr, "pthread_create failed: %d\n", res);
             return EXIT_FAILURE;
         }
     }
-
+    
     while (true) {
         printf("\r");
-
+        
         bool needs_wait = false;
         for (size_t i = 0; i < threads_count; i++) {
             if (needs_wait) {
                 break;
             }
-
+            
             pthread_mutex_lock(&threads[i].finished_mutex);
-
+            
             if (!threads[i].finished) {
                 needs_wait = true;
             }
-
+            
             pthread_mutex_unlock(&threads[i].finished_mutex);
         }
-
+        
         for (size_t i = 0; i < threads_count; i++) {
             if (i > 0) {
                 printf(", ");
             }
-
+            
             file_load_t* data = &threads[i];
             pthread_mutex_lock(&data->progress_percent_mutex);
             const char* color_str = data->load_error != ERR_OK ? ANSI_ESC("31") : data->progress_percent >= 1.0 ? ANSI_ESC("32") : ANSI_ESC("0");
-
+            
             printf("%s" ANSI_ESC("1") "%s: " ANSI_ESC("0") "%s%.2f%%" ANSI_RESET, color_str, data->input_file, color_str, data->progress_percent * 100.0);
             pthread_mutex_unlock(&data->progress_percent_mutex);
         }
-
+        
         fflush(stdout);
-
+        
         if (!needs_wait) {
             break;
         }
-
+        
         usleep(1000 * 100);
     }
-
+    
     printf("\n");
-
+    
     for (size_t i = 0; i < threads_count; i++) {
         file_load_t data = threads[i];
         if (data.load_error != ERR_OK) {
-            printf(ANSI_ESC("31") "#%zu (%s) failed to convert, error: %d\n" ANSI_RESET, i + 1, data.input_file, data.load_error);
+            printf(ANSI_ESC("1") ANSI_ESC("31") "#%zu" ANSI_RESET ANSI_ESC("31") " %s failed to convert, error: %d\n" ANSI_RESET, i + 1, data.input_file, data.load_error);
         } else {
-            printf(ANSI_ESC("32") "#%zu (%s) successfully converted\n" ANSI_RESET, i + 1, data.input_file);
+            printf(ANSI_ESC("1") ANSI_ESC("32") "#%zu" ANSI_RESET ANSI_ESC("32") " %s successfully converted\n" ANSI_RESET, i + 1, data.input_file);
         }
         pthread_join(data.thread, NULL);
     }
-
+    
     free(threads);
-
+    
     for (size_t i = 0; i < songs_count; i++) {
         free(songs[i]);
     }
-
+    
     free(songs);
 
-    printf("Conversion complete\n");
-
+    free(conversion_folder);
+    free(songs_folder);
+    
+    printf(ANSI_ESC("1") ANSI_ESC("32") "Conversion complete\n" ANSI_RESET);
+    
     return EXIT_SUCCESS;
 }

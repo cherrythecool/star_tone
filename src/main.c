@@ -15,6 +15,9 @@
 #include "cherryaudio.h"
 #include "opusenc.h"
 
+#define ANSI_ESC(v) "\033[" v "m"
+#define ANSI_RESET ANSI_ESC("")
+
 typedef enum {
     ERR_OK = 0,
     ERR_FAILED_TO_OPEN_STREAM,
@@ -212,11 +215,11 @@ void* file_load(void* arg) {
 }
 
 int main(void) {
-    printf("starting star_tone\n");
+    printf(ANSI_ESC("1") ANSI_ESC("33") "[star_tone] " ANSI_RESET "Starting\n");
 
     const char* songs_folder = "./songs";
     const char* conversion_folder = "./songs-converted";
-    printf("opening songs dir at '%s' & converting to '%s'\n", songs_folder, conversion_folder);
+    printf("Opening songs directory '%s' and converting into '%s'\n", songs_folder, conversion_folder);
 
     DIR *dp;
     dp = opendir(songs_folder);
@@ -251,7 +254,7 @@ int main(void) {
     
     closedir(dp);
 
-    printf("found %zu files to convert from path\n", songs_count);
+    printf("Found %zu files to convert\n", songs_count);
 
     file_load_t* threads = calloc(songs_count, sizeof(file_load_t));
     size_t threads_count = songs_count;
@@ -297,10 +300,6 @@ int main(void) {
             pthread_mutex_unlock(&threads[i].finished_mutex);
         }
 
-        if (!needs_wait) {
-            break;
-        }
-
         for (size_t i = 0; i < threads_count; i++) {
             if (i > 0) {
                 printf(", ");
@@ -308,22 +307,34 @@ int main(void) {
 
             file_load_t* data = &threads[i];
             pthread_mutex_lock(&data->progress_percent_mutex);
-            printf("%s: %f%%", data->input_file, data->progress_percent * 100.0);
+            const char* color_str = data->load_error != ERR_OK ? ANSI_ESC("31") : data->progress_percent >= 1.0 ? ANSI_ESC("32") : ANSI_ESC("0");
+
+            printf("%s" ANSI_ESC("1") "%s: " ANSI_ESC("0") "%s%.2f%%" ANSI_RESET, color_str, data->input_file, color_str, data->progress_percent * 100.0);
             pthread_mutex_unlock(&data->progress_percent_mutex);
         }
 
         fflush(stdout);
+
+        if (!needs_wait) {
+            break;
+        }
+
+        usleep(1000 * 100);
     }
 
     printf("\n");
 
     for (size_t i = 0; i < threads_count; i++) {
         file_load_t data = threads[i];
-        printf("input: %s, output: %s, error: %d\n", data.input_file, data.output_folder, data.load_error);
+        if (data.load_error != ERR_OK) {
+            printf(ANSI_ESC("31") "#%zu (%s) failed to convert, error: %d\n" ANSI_RESET, i + 1, data.input_file, data.load_error);
+        } else {
+            printf(ANSI_ESC("32") "#%zu (%s) successfully converted\n" ANSI_RESET, i + 1, data.input_file);
+        }
         pthread_join(data.thread, NULL);
     }
 
-    printf("freeing bs\n");
+    free(threads);
 
     for (size_t i = 0; i < songs_count; i++) {
         free(songs[i]);
@@ -331,5 +342,7 @@ int main(void) {
 
     free(songs);
 
-    return 0;
+    printf("Conversion complete\n");
+
+    return EXIT_SUCCESS;
 }

@@ -15,6 +15,27 @@
 #include "cherryaudio.h"
 #include "opusenc.h"
 
+typedef enum {
+    ERR_OK = 0,
+    ERR_FAILED_TO_OPEN_STREAM,
+    ERR_FAILED_TO_INIT_ENCODER,
+    ERR_FAILED_TO_ENCODE,
+} file_load_err;
+
+typedef struct {
+    pthread_t thread;
+    const char* input_folder;
+    const char* input_file;
+    const char* output_folder;
+    file_load_err load_error;
+
+    bool finished;
+    pthread_mutex_t finished_mutex;
+
+    double progress_percent;
+    pthread_mutex_t progress_percent_mutex;
+} file_load_t;
+
 const char* file_path_get_ext(const char* path) {
     bool found_period = false;
     size_t last_period = 0;
@@ -92,17 +113,105 @@ double time_get_seconds(void) {
 //     }
 // }
 
+void* file_load(void* arg) {
+    file_load_t* args = (file_load_t*)arg;
+
+    char song_path[1024 * 3];
+    char conversion_path[1024 * 3];
+    char conversion_file[1024];
+
+    memset(song_path, 0, sizeof(song_path) / sizeof(song_path[0]));
+    sprintf(song_path, "%s/%s", args->input_folder, args->input_file);
+
+    memset(conversion_path, 0, sizeof(conversion_path) / sizeof(conversion_path[0]));
+
+    replace_extension_with(conversion_file, args->input_file, "opus");
+    sprintf(conversion_path, "%s/%s", args->output_folder, conversion_file);
+
+    const char* extension = file_path_get_ext(args->input_file);
+    cherryaudio_file_format format = strs_eql_nocase(extension, "flac") ? CHERRYAUDIO_FILE_FORMAT_FLAC : CHERRYAUDIO_FILE_FORMAT_WAV_AIFF;
+
+    cherryaudio_stream stream = cherryaudio_stream_from_path(song_path, format);
+    cherryaudio_metadata stream_meta = stream.metadata;
+    bool song_loaded = stream_meta.total_sample_count > 0;
+
+    if (!song_loaded) {
+        cherryaudio_stream_free(stream);
+        args->load_error = ERR_FAILED_TO_OPEN_STREAM;
+
+        pthread_mutex_lock(&args->finished_mutex);
+        args->finished = true;
+        pthread_mutex_unlock(&args->finished_mutex);
+
+        pthread_exit(NULL);
+    }
+
+    OggOpusComments* comments = ope_comments_create();
+
+    int encoder_init_error;
+    OggOpusEnc* encoder = ope_encoder_create_file(conversion_path, comments, stream_meta.sample_rate, stream_meta.channels, stream_meta.channels > 8 ? 255 : stream_meta.channels > 2, &encoder_init_error);
+    if (encoder_init_error != OPE_OK) {
+        ope_comments_destroy(comments);
+        cherryaudio_stream_free(stream);
+        args->load_error = ERR_FAILED_TO_INIT_ENCODER;
+
+        pthread_mutex_lock(&args->finished_mutex);
+        args->finished = true;
+        pthread_mutex_unlock(&args->finished_mutex);
+
+        pthread_exit(NULL);
+    }
+
+    uint64_t decode_buffer_size = stream_meta.sample_rate * stream_meta.channels;
+    float* decode_buffer = malloc(decode_buffer_size * sizeof(float));
+
+    uint64_t samples_done = 0;
+    while (samples_done < stream_meta.total_sample_count) {
+        cherryaudio_pcm pcm = cherryaudio_stream_decode_pcm(stream, CHERRYAUDIO_PCM_FORMAT_F32, decode_buffer_size / stream_meta.channels, decode_buffer);
+        if (pcm.frames_len == 0) {
+            printf("\nreached eof early\n");
+            break;
+        }
+
+        samples_done += pcm.frames_len / stream_meta.channels;
+
+        int encode_res = ope_encoder_write_float(encoder, pcm.frames, pcm.frames_len / stream_meta.channels);
+        if (encode_res != OPE_OK) {
+            free(decode_buffer);
+            ope_encoder_drain(encoder);
+            ope_encoder_destroy(encoder);
+            ope_comments_destroy(comments);
+            cherryaudio_stream_free(stream);
+            args->load_error = ERR_FAILED_TO_ENCODE;
+
+            pthread_mutex_lock(&args->finished_mutex);
+            args->finished = true;
+            pthread_mutex_unlock(&args->finished_mutex);
+
+            pthread_exit(NULL);
+        }
+
+        pthread_mutex_lock(&args->progress_percent_mutex);
+        args->progress_percent = (double)samples_done / (double)stream_meta.total_sample_count;
+        pthread_mutex_unlock(&args->progress_percent_mutex);
+    }
+    
+    free(decode_buffer);
+    ope_encoder_drain(encoder);
+    ope_encoder_destroy(encoder);
+    ope_comments_destroy(comments);
+    cherryaudio_stream_free(stream);
+
+    args->load_error = ERR_OK;
+
+    pthread_mutex_lock(&args->finished_mutex);
+    args->finished = true;
+    pthread_mutex_unlock(&args->finished_mutex);
+
+    pthread_exit(NULL);
+}
+
 int main(void) {
-    // double start = time_get_seconds();
-    // busy_sleep(1.0 / 60.0);
-    // double end = time_get_seconds();
-    // printf("%f s diff on busy sleep\n", end - start);
-
-    // start = time_get_seconds();
-    // usleep(16667);
-    // end = time_get_seconds();
-    // printf("%f s diff on usleep\n", end - start);
-
     printf("starting star_tone\n");
 
     const char* songs_folder = "./songs";
@@ -124,7 +233,6 @@ int main(void) {
     while ((ep = readdir(dp)) != NULL) {
         const char* extension = file_path_get_ext(ep->d_name);
 
-        // TODO: lowercase & uppercase extension support
         if (strs_eql_nocase(extension, "flac") || strs_eql_nocase(extension, "wav")) {
             if (songs_count > songs_size - 1) {
                 songs_size *= 2;
@@ -145,92 +253,74 @@ int main(void) {
 
     printf("found %zu files to convert from path\n", songs_count);
 
-    char song_path[1024 * 3];
-    char conversion_path[1024 * 3];
-    char conversion_file[1024];
+    file_load_t* threads = calloc(songs_count, sizeof(file_load_t));
+    size_t threads_count = songs_count;
 
     for (size_t i = 0; i < songs_count; i++) {
-        memset(song_path, 0, sizeof(song_path) / sizeof(song_path[0]));
-        sprintf(song_path, "%s/%s", songs_folder, songs[i]);
+        threads[i] = (file_load_t) {
+            (pthread_t) {0},
+            songs_folder,
+            songs[i],
+            conversion_folder,
+            ERR_OK,
+            false,
+            (pthread_mutex_t) {0},
+            0.0,
+            (pthread_mutex_t) {0},
+        };
 
-        memset(conversion_path, 0, sizeof(conversion_path) / sizeof(conversion_path[0]));
+        pthread_mutex_init(&threads[i].finished_mutex, NULL);
+        pthread_mutex_init(&threads[i].progress_percent_mutex, NULL);
 
-        replace_extension_with(conversion_file, songs[i], "opus");
-        sprintf(conversion_path, "%s/%s", conversion_folder, conversion_file);
-
-        printf("converting '%s' to opus '%s'\n", song_path, conversion_path);
-        printf("decoding original file\n");
-
-        const char* extension = file_path_get_ext(songs[i]);
-        cherryaudio_file_format format = strs_eql_nocase(extension, "flac") ? CHERRYAUDIO_FILE_FORMAT_FLAC : CHERRYAUDIO_FILE_FORMAT_WAV_AIFF;
-
-        cherryaudio_stream stream = cherryaudio_stream_from_path(song_path, format);
-        cherryaudio_metadata stream_meta = stream.metadata;
-        bool song_loaded = stream_meta.total_sample_count > 0;
-    
-        if (song_loaded) {
-            printf("stream loaded with %llu audio frames\n", stream_meta.total_sample_count);
-        } else {
-            fprintf(stderr, "failed to open song stream at path '%s'\n", song_path);
-            return 1;
+        int res = pthread_create(&threads[i].thread, NULL, file_load, &threads[i]);
+        if (res) {
+            fprintf(stderr, "pthread_create failed: %d\n", res);
+            return EXIT_FAILURE;
         }
+    }
 
-        printf("setting up opus encoder\n");
-        OggOpusComments* comments = ope_comments_create();
-    
-        int encoder_init_error;
-        OggOpusEnc* encoder = ope_encoder_create_file(conversion_path, comments, stream_meta.sample_rate, stream_meta.channels, stream_meta.channels > 8 ? 255 : stream_meta.channels > 2, &encoder_init_error);
-        if (encoder_init_error != OPE_OK) {
-            fprintf(stderr, "failed to initialize opus encoder with error %d\n", encoder_init_error);
-            return 1;
-        }
+    while (true) {
+        printf("\r");
 
-        uint64_t decode_buffer_size = stream_meta.sample_rate * stream_meta.channels;
-        float* decode_buffer = malloc(decode_buffer_size * sizeof(float));
-
-        double pcm_s = 0.0;
-        double opus_s = 0.0;
-
-        // TODO: test perf of the flac audio decoding and opus encoding to see which is bottleneck
-        // my guess is opus & that i need to do the proper optimizations with like SIMD for it but we'll see
-        uint64_t samples_done = 0;
-        while (samples_done < stream_meta.total_sample_count) {
-            double start = time_get_seconds();
-            cherryaudio_pcm pcm = cherryaudio_stream_decode_pcm(stream, CHERRYAUDIO_PCM_FORMAT_F32, decode_buffer_size / stream_meta.channels, decode_buffer);
-            if (pcm.frames_len == 0) {
-                printf("\nreached eof early\n");
+        bool needs_wait = false;
+        for (size_t i = 0; i < threads_count; i++) {
+            if (needs_wait) {
                 break;
             }
-            pcm_s += time_get_seconds() - start;
-            printf("\r%fs to decode pcm", pcm_s);
 
-            samples_done += pcm.frames_len / stream_meta.channels;
+            pthread_mutex_lock(&threads[i].finished_mutex);
 
-            start = time_get_seconds();
-            int encode_res = ope_encoder_write_float(encoder, pcm.frames, pcm.frames_len / stream_meta.channels);
-            if (encode_res != OPE_OK) {
-                fprintf(stderr, "failed to encode opus with error %d\n", encode_res);
-                return 1;
+            if (!threads[i].finished) {
+                needs_wait = true;
             }
-            opus_s += time_get_seconds() - start;
-            printf(" // %fs to encode opus", opus_s);
 
-            fflush(stdout);
+            pthread_mutex_unlock(&threads[i].finished_mutex);
         }
-        
-        printf("\ndraining and destroying opus encoder now\n");
-        
-        ope_encoder_drain(encoder);
-        
-        ope_encoder_destroy(encoder);
-        ope_comments_destroy(comments);
 
-        printf("freeing cherryaudio stream\n");
-        cherryaudio_stream_free(stream);
+        if (!needs_wait) {
+            break;
+        }
 
-        free(decode_buffer);
+        for (size_t i = 0; i < threads_count; i++) {
+            if (i > 0) {
+                printf(", ");
+            }
 
-        printf("finished conversion of '%s'\n", song_path);
+            file_load_t* data = &threads[i];
+            pthread_mutex_lock(&data->progress_percent_mutex);
+            printf("%s: %f%%", data->input_file, data->progress_percent * 100.0);
+            pthread_mutex_unlock(&data->progress_percent_mutex);
+        }
+
+        fflush(stdout);
+    }
+
+    printf("\n");
+
+    for (size_t i = 0; i < threads_count; i++) {
+        file_load_t data = threads[i];
+        printf("input: %s, output: %s, error: %d\n", data.input_file, data.output_folder, data.load_error);
+        pthread_join(data.thread, NULL);
     }
 
     printf("freeing bs\n");

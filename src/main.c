@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -10,7 +11,24 @@
 #include "cherryaudio.h"
 #include "opusenc.h"
 
-char* replace_extension_with(const char* path, const char* newext) {
+bool strs_eql_nocase(const char* s1, const char* s2) {
+    size_t l1 = strlen(s1);
+    size_t l2 = strlen(s2);
+
+    if (l1 != l2) {
+        return false;
+    }
+
+    for (size_t i = 0; i < l1; i++) {
+        if (tolower(s1[i]) != tolower(s2[i])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void replace_extension_with(char* dst, const char* path, const char* newext) {
     bool found_period = false;
     size_t last_period = 0;
 
@@ -28,16 +46,15 @@ char* replace_extension_with(const char* path, const char* newext) {
         size = last_period + 1 + strlen(newext);
     }
 
-    char* fart = calloc(1, size + 1);
-    if (!found_period) {
-        sprintf(fart, "%s.%s", path, newext);
-    } else {
-        memcpy(fart, path, last_period);
-        fart[last_period] = '.';
-        memcpy(fart + last_period + 1, newext, strlen(newext));
-    }
+    memset(dst, 0, size + 1);
 
-    return fart;
+    if (!found_period) {
+        sprintf(dst, "%s.%s", path, newext);
+    } else {
+        memcpy(dst, path, last_period);
+        dst[last_period] = '.';
+        memcpy(dst + last_period + 1, newext, strlen(newext));
+    }
 }
 
 int main(void) {
@@ -63,7 +80,7 @@ int main(void) {
         const char* extension = cherryaudio_str_pathext(ep->d_name);
 
         // TODO: lowercase & uppercase extension support
-        if (strcmp(extension, "flac") == 0 || strcmp(extension, "wav") == 0) {
+        if (strs_eql_nocase(extension, "flac") || strs_eql_nocase(extension, "wav")) {
             if (songs_count > songs_size - 1) {
                 songs_size *= 2;
                 songs = realloc(songs, sizeof(char*) * songs_size);
@@ -85,6 +102,7 @@ int main(void) {
 
     char song_path[1024 * 3];
     char conversion_path[1024 * 3];
+    char conversion_file[1024];
 
     for (size_t i = 0; i < songs_count; i++) {
         memset(song_path, 0, sizeof(song_path) / sizeof(song_path[0]));
@@ -92,14 +110,16 @@ int main(void) {
 
         memset(conversion_path, 0, sizeof(conversion_path) / sizeof(conversion_path[0]));
 
-        char* converted_song_path = replace_extension_with(songs[i], "opus");
-        sprintf(conversion_path, "%s/%s", conversion_folder, converted_song_path);
-        free(converted_song_path);
+        replace_extension_with(conversion_file, songs[i], "opus");
+        sprintf(conversion_path, "%s/%s", conversion_folder, conversion_file);
 
         printf("converting '%s' to opus '%s'\n", song_path, conversion_path);
         printf("decoding original file\n");
 
-        cherryaudio_file song = cherryaudio_decode_from_path(song_path, CHERRYAUDIO_FILE_FORMAT_DETECT, CHERRYAUDIO_PCM_FORMAT_F32);
+        const char* extension = cherryaudio_str_pathext(songs[i]);
+        cherryaudio_file_format format = strs_eql_nocase(extension, "flac") ? CHERRYAUDIO_FILE_FORMAT_FLAC : CHERRYAUDIO_FILE_FORMAT_WAV_AIFF;
+
+        cherryaudio_file song = cherryaudio_decode_from_path(song_path, format, CHERRYAUDIO_PCM_FORMAT_F32);
         bool song_loaded = song.pcm_data.frames_len > 0;
     
         if (song_loaded) {

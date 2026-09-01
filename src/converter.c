@@ -1,5 +1,6 @@
 #include "converter.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,6 +81,38 @@ void* converter_convert_func(void* arg) {
     }
 
     OggOpusComments* comments = ope_comments_create();
+
+    for (size_t i = 0; i < stream.comments_count; i++) {
+        for (size_t j = 0; j < stream.comments[i].comments_count; j++) {
+            int comment_err = ope_comments_add_string(comments, stream.comments[i].comments[j]);
+            if (comment_err != OPE_OK) {
+                fprintf(stderr, "failed to add opus comment with libopusenc, error: %d\n", comment_err);
+            }
+        }
+    }
+
+    for (size_t i = 0; i < stream.pictures_count; i++) {
+        cherryaudio_stream_picture pic = stream.pictures[i];
+        if (pic.picture_data_size == 0) {
+            continue;
+        }
+
+        int picture_err;
+        if (pic.description_length > 0) {
+            picture_err = ope_comments_add_picture_from_memory(comments, (const char*)pic.picture_data, pic.picture_data_size, -1, pic.description);
+            free(pic.description);
+        } else {
+            picture_err = ope_comments_add_picture_from_memory(comments, (const char*)pic.picture_data, pic.picture_data_size, -1, NULL);
+        }
+        
+        if (picture_err != OPE_OK) {
+            fprintf(stderr, "failed to add opus picture with libopusenc, error: %d\n", picture_err);
+        }
+
+        free(pic.picture_data);
+
+        stream.pictures[i] = (cherryaudio_stream_picture) {0};
+    }
 
     int encoder_init_error;
     OggOpusEnc* encoder = ope_encoder_create_file(conversion_path, comments, stream_meta.sample_rate, stream_meta.channels, stream_meta.channels > 8 ? 255 : stream_meta.channels > 2, &encoder_init_error);

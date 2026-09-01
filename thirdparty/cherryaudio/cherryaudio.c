@@ -73,6 +73,86 @@ cherryaudio_file cherryaudio_decode_from_path(
     return file;
 }
 
+static void cherryaudio_drflac_metadata(void* user_data, drflac_metadata* flac_metadata) {
+    cherryaudio_stream* stream = (cherryaudio_stream*)user_data;
+
+    switch (flac_metadata->type) {
+        case DRFLAC_METADATA_BLOCK_TYPE_VORBIS_COMMENT: {
+            stream->comments_count++;
+
+            if (!stream->comments) {
+                stream->comments_size = 1;
+                stream->comments = calloc(1, sizeof(cherryaudio_stream_comment));
+            } else if (stream->comments_count > stream->comments_size) {
+                stream->comments_size *= 2;
+                stream->comments = realloc(stream->comments, sizeof(cherryaudio_stream_comment) * stream->comments_size);
+            }
+
+            cherryaudio_stream_comment cherry_comment = (cherryaudio_stream_comment) {0};
+            cherry_comment.vendor_length = flac_metadata->data.vorbis_comment.vendorLength;
+            cherry_comment.vendor = calloc(cherry_comment.vendor_length + 1, sizeof(char));
+            memcpy(cherry_comment.vendor, flac_metadata->data.vorbis_comment.vendor, cherry_comment.vendor_length);
+
+            drflac_vorbis_comment_iterator iterator;
+            drflac_init_vorbis_comment_iterator(&iterator, flac_metadata->data.vorbis_comment.commentCount, flac_metadata->data.vorbis_comment.pComments);
+
+            size_t cherry_comments_size = 0;
+
+            const char* comment;
+            uint32_t comment_length;
+            while ((comment = drflac_next_vorbis_comment(&iterator, &comment_length)) != NULL) {
+                cherry_comment.comments_count++;
+
+                if (!cherry_comment.comments) {
+                    cherry_comments_size = 1;
+                    cherry_comment.comments = calloc(1, sizeof(char*));
+                } else if (cherry_comment.comments_count > cherry_comments_size) {
+                    cherry_comments_size *= 2;
+                    cherry_comment.comments = realloc(cherry_comment.comments, sizeof(char*) * cherry_comments_size);
+                }
+
+                char* comment_copy = calloc(comment_length + 1, sizeof(char));
+                memcpy(comment_copy, comment, comment_length);
+                cherry_comment.comments[cherry_comment.comments_count - 1] = comment_copy;
+            }
+
+            stream->comments[stream->comments_count - 1] = cherry_comment;
+            break;
+        }
+
+        case DRFLAC_METADATA_BLOCK_TYPE_PICTURE: {
+            stream->pictures_count++;
+
+            if (!stream->pictures) {
+                stream->pictures_size = 1;
+                stream->pictures = calloc(1, sizeof(cherryaudio_stream_picture));
+            } else if (stream->pictures_count > stream->pictures_size) {
+                stream->pictures_size *= 2;
+                stream->pictures = realloc(stream->pictures, sizeof(cherryaudio_stream_picture) * stream->pictures_size);
+            }
+
+            cherryaudio_stream_picture cherry_picture = (cherryaudio_stream_picture) {0};
+            cherry_picture.picture_data_size = flac_metadata->data.picture.pictureDataSize;
+            cherry_picture.picture_data = malloc(cherry_picture.picture_data_size);
+            memcpy(cherry_picture.picture_data, flac_metadata->data.picture.pPictureData, cherry_picture.picture_data_size);
+
+            cherry_picture.description_length = flac_metadata->data.picture.descriptionLength;
+
+            if (cherry_picture.description_length > 0) {
+                cherry_picture.description = calloc(cherry_picture.description_length + 1, sizeof(char));
+                memcpy(cherry_picture.description, flac_metadata->data.picture.description, cherry_picture.description_length);
+            }
+
+            stream->pictures[stream->pictures_count - 1] = cherry_picture;
+            break;
+        }
+
+        default: {
+            break;
+        }
+    }
+}
+
 cherryaudio_stream cherryaudio_stream_from_path(const char* path, cherryaudio_file_format file_format) {
     cherryaudio_stream stream = (cherryaudio_stream){0};
 
@@ -89,7 +169,7 @@ cherryaudio_stream cherryaudio_stream_from_path(const char* path, cherryaudio_fi
 
         case CHERRYAUDIO_FILE_FORMAT_FLAC: {
             stream.file_format = file_format;
-            stream.format_handle = drflac_open_file(path, NULL);
+            stream.format_handle = drflac_open_file_with_metadata(path, cherryaudio_drflac_metadata, &stream, NULL);
             stream.metadata.channels = ((drflac*)stream.format_handle)->channels;
             stream.metadata.sample_rate = ((drflac*)stream.format_handle)->sampleRate;
             stream.metadata.total_sample_count = ((drflac*)stream.format_handle)->totalPCMFrameCount;
@@ -159,6 +239,38 @@ void cherryaudio_stream_free(cherryaudio_stream stream) {
         case CHERRYAUDIO_FILE_FORMAT_FLAC:
             drflac_close(stream.format_handle);
             break;
+    }
+
+    if (stream.comments) {
+        for (size_t i = 0; i < stream.comments_count; i++) {
+            if (stream.comments[i].vendor) {
+                free(stream.comments[i].vendor);
+            }
+
+            if (stream.comments[i].comments) {
+                for (size_t j = 0; j < stream.comments[i].comments_count; j++) {
+                    free(stream.comments[i].comments[j]);
+                }
+    
+                free(stream.comments[i].comments);
+            }
+        }
+
+        free(stream.comments);
+    }
+
+    if (stream.pictures) {
+        for (size_t i = 0; i < stream.pictures_count; i++) {
+            if (stream.pictures[i].description) {
+                free(stream.pictures[i].description);
+            }
+
+            if (stream.pictures[i].picture_data) {
+                free(stream.pictures[i].picture_data);
+            }
+        }
+
+        free(stream.pictures);
     }
 }
 

@@ -27,6 +27,7 @@ add_executable(star_tone
     src/main.c
 
     src/str_tools.c
+    src/io_tools.c
     src/converter.c
 )
 

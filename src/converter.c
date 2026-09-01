@@ -15,6 +15,7 @@ void* converter_convert_func(void* arg) {
     char song_path[1024 * 3];
     char conversion_path[1024 * 3];
     char conversion_file[1024];
+    char conversion_parent_path[1024];
 
     memset(song_path, 0, sizeof(song_path) / sizeof(song_path[0]));
     sprintf(song_path, "%s/%s", args->input_folder, args->input_file);
@@ -24,7 +25,41 @@ void* converter_convert_func(void* arg) {
     str_tools_replace_extension(conversion_file, args->input_file, "opus");
     sprintf(conversion_path, "%s/%s", args->output_folder, conversion_file);
 
+    memset(conversion_parent_path, 0, sizeof(conversion_parent_path) / sizeof(conversion_parent_path[0]));
+    str_tools_remove_extension(conversion_parent_path, conversion_path);
+
+    {
+        const char command[] = "mkdir -p \"\"";
+        size_t command_size = sizeof(command) / sizeof(command[0]) - 1;
+        char mkdir_p[1024 + command_size + 1];
+        sprintf(mkdir_p, "mkdir -p \"%s\"", conversion_parent_path);
+        system(mkdir_p);
+    }
+
     const char* extension = str_tools_get_extension(args->input_file);
+
+    if (!str_tools_strs_eql_case_insensitive(extension, "flac") && !str_tools_strs_eql_case_insensitive(extension, "wav")) {
+        {
+            const char command[] = "cp   \"\"\"\"";
+            size_t command_size = sizeof(command) / sizeof(command[0]) - 1;
+            char command_final[1024 + command_size + 1];
+            sprintf(command_final, "cp \"%s\" \"%s\"", song_path, conversion_path);
+            system(command_final);
+        }
+        
+        args->error = CONVERTER_ERR_OK;
+
+        pthread_mutex_lock(&args->progress_percent_mutex);
+        args->progress_percent = 1.0;
+        pthread_mutex_unlock(&args->progress_percent_mutex);
+
+        pthread_mutex_lock(&args->finished_mutex);
+        args->finished = true;
+        pthread_mutex_unlock(&args->finished_mutex);
+
+        pthread_exit(NULL);
+    }
+
     cherryaudio_file_format format = str_tools_strs_eql_case_insensitive(extension, "flac") ? CHERRYAUDIO_FILE_FORMAT_FLAC : CHERRYAUDIO_FILE_FORMAT_WAV_AIFF;
 
     cherryaudio_stream stream = cherryaudio_stream_from_path(song_path, format);

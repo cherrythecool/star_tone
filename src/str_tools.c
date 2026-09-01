@@ -69,6 +69,28 @@ void str_tools_replace_extension(char* dst, const char* path, const char* newext
     }
 }
 
+void str_tools_remove_extension(char* dst, const char* path) {
+    bool found_slash = false;
+    size_t last_slash = 0;
+
+    for (size_t i = 0; path[i] != '\0'; ++i) {
+        if (path[i] == '/') {
+            found_slash = true;
+            last_slash = i;
+        }
+    }
+
+    if (!found_slash) {
+        memcpy(dst, path, strlen(path));
+        return;
+    }
+    
+    size_t size = last_slash + 1;
+    memset(dst, 0, size + 1);
+    memcpy(dst, path, last_slash);
+    dst[last_slash] = '/';
+}
+
 size_t str_tools_remove_last_newline(char* str, size_t len) {
     bool found_newline = false;
     size_t newline_index = 0;

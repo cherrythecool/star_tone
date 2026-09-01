@@ -39,6 +39,8 @@ void* converter_convert_func(void* arg) {
     const char* extension = str_tools_get_extension(args->input_file);
 
     if (!str_tools_strs_eql_case_insensitive(extension, "flac") && !str_tools_strs_eql_case_insensitive(extension, "wav")) {
+        sprintf(conversion_path, "%s/%s", args->output_folder, args->input_file);
+
         {
             const char command[] = "cp   \"\"\"\"";
             size_t command_size = sizeof(command) / sizeof(command[0]) - 1;

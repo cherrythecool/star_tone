@@ -63,7 +63,7 @@ int main(void) {
     size_t songs_index = 0;
     ConverterConvertArguments* threads = calloc(threads_count, sizeof(ConverterConvertArguments));
     
-    for (size_t i = 0; i < songs_count; i++) {
+    for (size_t i = 0; i < threads_count; i++) {
         threads[i] = (ConverterConvertArguments) {
             songs_folder,
             songs[i],
@@ -86,39 +86,51 @@ int main(void) {
             return EXIT_FAILURE;
         }
     }
-    
-    while (true) {
-        bool needs_wait = false;
+
+    while (songs_index < songs_count) {
         for (size_t i = 0; i < threads_count; i++) {
-            if (needs_wait) {
-                break;
-            }
-            
+            bool kill_thread = false;
             pthread_mutex_lock(&threads[i].finished_mutex);
-            
-            if (!threads[i].finished) {
-                needs_wait = true;
-            }
-            
+            kill_thread = threads[i].finished;
             pthread_mutex_unlock(&threads[i].finished_mutex);
+
+            if (kill_thread) {
+                pthread_join(threads[i].thread, NULL);
+
+                threads[i] = (ConverterConvertArguments) {
+                    songs_folder,
+                    songs[songs_index],
+                    conversion_folder,
+                    CONVERTER_ERR_OK,
+                    false,
+                    0.0,
+                    (pthread_t) {0},
+                    (pthread_mutex_t) {0},
+                    (pthread_mutex_t) {0},
+                };
+                
+                pthread_mutex_init(&threads[i].finished_mutex, NULL);
+                pthread_mutex_init(&threads[i].progress_percent_mutex, NULL);
+                songs_index++;
+
+                int res = pthread_create(&threads[i].thread, NULL, converter_convert_func, &threads[i]);
+                if (res) {
+                    fprintf(stderr, "pthread_create failed: %d\n", res);
+                    return EXIT_FAILURE;
+                }
+            }
         }
-        
-        if (!needs_wait) {
-            break;
-        }
-        
-        usleep(1000 * 100);
+
+        printf("\r%zu queued", songs_index);
+        fflush(stdout);
+
+        usleep(1000);
     }
     
     printf("\n");
     
     for (size_t i = 0; i < threads_count; i++) {
         ConverterConvertArguments data = threads[i];
-        if (data.error != CONVERTER_ERR_OK) {
-            printf(ANSI_ESC("1") ANSI_ESC("31") "#%zu" ANSI_RESET ANSI_ESC("31") " %s failed to convert, error: %d\n" ANSI_RESET, i + 1, data.input_file, data.error);
-        } else {
-            printf(ANSI_ESC("1") ANSI_ESC("32") "#%zu" ANSI_RESET ANSI_ESC("32") " %s successfully converted\n" ANSI_RESET, i + 1, data.input_file);
-        }
         pthread_join(data.thread, NULL);
     }
     

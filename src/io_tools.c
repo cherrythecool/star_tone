@@ -16,6 +16,14 @@ static bool is_regular_file(const char* path) {
     return S_ISREG(path_stat.st_mode);
 }
 
+const char* list_skips[] = {
+    ".",
+    "..",
+    ".DS_Store",
+    "Thumbs.db",
+    "__MACOSX",
+};
+
 IOToolsDirectoryList io_tools_list_dir_recurse(const char* path, IOToolsDirectoryList* recursive_output) {
     bool is_first_call = recursive_output == NULL;
     IOToolsDirectoryList list = {0};
@@ -40,7 +48,15 @@ IOToolsDirectoryList io_tools_list_dir_recurse(const char* path, IOToolsDirector
     
     struct dirent* dir_entry_ptr;
     while ((dir_entry_ptr = readdir(dir_ptr)) != NULL) {
-        if (strcmp(dir_entry_ptr->d_name, ".") == 0 || strcmp(dir_entry_ptr->d_name, "..") == 0) {
+        bool skip = false;
+        for (size_t i = 0; i < sizeof(list_skips) / sizeof(list_skips[0]); i++) {
+            if (strcmp(dir_entry_ptr->d_name, list_skips[i]) == 0) {
+                skip = true;
+                break;
+            }
+        }
+
+        if (skip) {
             continue;
         }
 

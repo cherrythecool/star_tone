@@ -140,10 +140,53 @@ cherryaudio_stream cherryaudio_stream_from_path(const char* path, cherryaudio_fi
     switch (file_format) {
         case CHERRYAUDIO_FILE_FORMAT_WAV_AIFF: {
             stream.format_handle = malloc(sizeof(drwav));
-            drwav_init_file(stream.format_handle, path, NULL);
-            stream.metadata.channels = ((drwav*)stream.format_handle)->channels;
-            stream.metadata.sample_rate = ((drwav*)stream.format_handle)->sampleRate;
-            stream.metadata.total_sample_count = ((drwav*)stream.format_handle)->totalPCMFrameCount;
+
+            if (user_ptr) {
+                drwav_init_file_with_metadata(stream.format_handle, path, 0, NULL);
+            } else {
+                drwav_init_file(stream.format_handle, path, NULL);
+            }
+
+            drwav* wav = (drwav*)stream.format_handle;
+            stream.metadata.channels = wav->channels;
+            stream.metadata.sample_rate = wav->sampleRate;
+            stream.metadata.total_sample_count = wav->totalPCMFrameCount;
+            
+            if (!user_ptr) {
+                break;
+            }
+
+            OggOpusComments* comments = (OggOpusComments*)user_ptr;
+
+            for (size_t i = 0; i < wav->metadataCount; i++) {
+                drwav_metadata meta = wav->pMetadata[i];
+                switch (meta.type) {
+                    case drwav_metadata_type_list_info_title:
+                        ope_comments_add(comments, "TITLE", meta.data.infoText.pString);
+                        break;
+                    case drwav_metadata_type_list_info_album:
+                        ope_comments_add(comments, "ALBUM", meta.data.infoText.pString);
+                        break;
+                    case drwav_metadata_type_list_info_artist:
+                        ope_comments_add(comments, "ARTIST", meta.data.infoText.pString);
+                        break;
+                    case drwav_metadata_type_list_info_comment:
+                        ope_comments_add(comments, "COMMENT", meta.data.infoText.pString);
+                        break;
+                    case drwav_metadata_type_list_info_date:
+                        ope_comments_add(comments, "DATE", meta.data.infoText.pString);
+                        break;
+                    case drwav_metadata_type_list_info_description:
+                        ope_comments_add(comments, "DESCRIPTION", meta.data.infoText.pString);
+                        break;
+                    case drwav_metadata_type_list_info_genre:
+                        ope_comments_add(comments, "GENRE", meta.data.infoText.pString);
+                        break;
+                    default:
+                        break;
+                }
+            }
+
             break;
         }
 

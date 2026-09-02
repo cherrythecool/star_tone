@@ -1,5 +1,6 @@
 #include "converter.h"
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,61 +64,40 @@ void* converter_convert_func(void* arg) {
         pthread_exit(NULL);
     }
 
-    cherryaudio_file_format format = str_tools_strs_eql_case_insensitive(extension, "flac") ? CHERRYAUDIO_FILE_FORMAT_FLAC : CHERRYAUDIO_FILE_FORMAT_WAV_AIFF;
+    OggOpusComments* comments = ope_comments_create();
 
-    cherryaudio_stream stream = cherryaudio_stream_from_path(song_path, format);
+    cherryaudio_file_format format = str_tools_strs_eql_case_insensitive(extension, "flac") ? CHERRYAUDIO_FILE_FORMAT_FLAC : CHERRYAUDIO_FILE_FORMAT_WAV_AIFF;
+    cherryaudio_stream stream = cherryaudio_stream_from_path(song_path, format, comments);
+
     cherryaudio_metadata stream_meta = stream.metadata;
     bool song_loaded = stream_meta.total_sample_count > 0;
-
+    
     if (!song_loaded) {
         cherryaudio_stream_free(stream);
+        ope_comments_destroy(comments);
         args->error = CONVERTER_ERR_FAILED_TO_OPEN_STREAM;
-
+        
         pthread_mutex_lock(&args->finished_mutex);
         args->finished = true;
         pthread_mutex_unlock(&args->finished_mutex);
-
-        pthread_exit(NULL);
-    }
-
-    OggOpusComments* comments = ope_comments_create();
-
-    for (size_t i = 0; i < stream.comments_count; i++) {
-        for (size_t j = 0; j < stream.comments[i].comments_count; j++) {
-            int comment_err = ope_comments_add_string(comments, stream.comments[i].comments[j]);
-            if (comment_err != OPE_OK) {
-                fprintf(stderr, "failed to add opus comment with libopusenc, error: %d\n", comment_err);
-            }
-        }
-    }
-
-    for (size_t i = 0; i < stream.pictures_count; i++) {
-        cherryaudio_stream_picture pic = stream.pictures[i];
-        if (pic.picture_data_size == 0) {
-            continue;
-        }
-
-        int picture_err;
-        if (pic.description_length > 0) {
-            picture_err = ope_comments_add_picture_from_memory(comments, (const char*)pic.picture_data, pic.picture_data_size, -1, pic.description);
-            free(pic.description);
-        } else {
-            picture_err = ope_comments_add_picture_from_memory(comments, (const char*)pic.picture_data, pic.picture_data_size, -1, NULL);
-        }
         
-        if (picture_err != OPE_OK) {
-            fprintf(stderr, "failed to add opus picture with libopusenc, error: %d\n", picture_err);
-        }
-
-        free(pic.picture_data);
-
-        stream.pictures[i] = (cherryaudio_stream_picture) {0};
+        pthread_exit(NULL);
     }
 
     int encoder_init_error;
     OggOpusEnc* encoder = ope_encoder_create_file(conversion_path, comments, stream_meta.sample_rate, stream_meta.channels, stream_meta.channels > 8 ? 255 : stream_meta.channels > 2, &encoder_init_error);
+    ope_comments_destroy(comments);
+
     if (encoder_init_error != OPE_OK) {
-        ope_comments_destroy(comments);
+        if (encoder) {
+            int drain_err = ope_encoder_drain(encoder);
+            if (drain_err != OPE_OK) {
+                fprintf(stderr, "failed to drain libopusenc encoder, err: %d\n", drain_err);
+            }
+    
+            ope_encoder_destroy(encoder);
+        }
+
         cherryaudio_stream_free(stream);
         args->error = CONVERTER_ERR_FAILED_TO_INIT_ENCODER;
 
@@ -144,9 +124,13 @@ void* converter_convert_func(void* arg) {
         int encode_res = ope_encoder_write_float(encoder, pcm.frames, pcm.frames_len / stream_meta.channels);
         if (encode_res != OPE_OK) {
             free(decode_buffer);
-            ope_encoder_drain(encoder);
+
+            int drain_err = ope_encoder_drain(encoder);
+            if (drain_err != OPE_OK) {
+                fprintf(stderr, "failed to drain libopusenc encoder, err: %d\n", drain_err);
+            }
+
             ope_encoder_destroy(encoder);
-            ope_comments_destroy(comments);
             cherryaudio_stream_free(stream);
             args->error = CONVERTER_ERR_FAILED_TO_ENCODE;
 
@@ -163,9 +147,13 @@ void* converter_convert_func(void* arg) {
     }
     
     free(decode_buffer);
-    ope_encoder_drain(encoder);
+
+    int drain_err = ope_encoder_drain(encoder);
+    if (drain_err != OPE_OK) {
+        fprintf(stderr, "failed to drain libopusenc encoder, err: %d\n", drain_err);
+    }
+    
     ope_encoder_destroy(encoder);
-    ope_comments_destroy(comments);
     cherryaudio_stream_free(stream);
 
     args->error = CONVERTER_ERR_OK;

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/signal.h>
 #include <time.h>
 
 // posix shit we prolly wanna replace eventually lol (with a cross platform api)
@@ -96,6 +97,12 @@ int main(void) {
 
             if (kill_thread) {
                 pthread_join(threads[i].thread, NULL);
+                pthread_mutex_destroy(&threads[i].finished_mutex);
+                pthread_mutex_destroy(&threads[i].progress_percent_mutex);
+
+                if (threads[i].error != CONVERTER_ERR_OK) {
+                    fprintf(stderr, ANSI_ESC("31") "file %s/%s had error %d\n" ANSI_RESET, threads[i].output_folder, threads[i].input_file, threads[i].error);
+                }
 
                 threads[i] = (ConverterConvertArguments) {
                     songs_folder,
@@ -121,17 +128,23 @@ int main(void) {
             }
         }
 
-        printf("\r%zu queued", songs_index);
+        printf("\r%zu queued / %zu total", songs_index, songs_count);
         fflush(stdout);
 
         usleep(1000);
     }
     
     printf("\n");
-    
+
+    printf("Waiting on the last %zu files...\n", threads_count);
+
     for (size_t i = 0; i < threads_count; i++) {
         ConverterConvertArguments data = threads[i];
         pthread_join(data.thread, NULL);
+        pthread_mutex_destroy(&data.finished_mutex);
+        pthread_mutex_destroy(&data.progress_percent_mutex);
+
+        printf("#%zu completed\n", i);
     }
     
     free(threads);
